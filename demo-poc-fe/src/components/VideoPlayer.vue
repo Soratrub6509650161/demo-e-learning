@@ -1,52 +1,65 @@
 <template>
   <div class="player-wrapper">
     <div class="player-inner">
-      <p v-if="title" class="player-title">{{ title }}</p>
 
-      <div class="sync-toggle-bar">
+      <!-- Top bar: title + sync button -->
+      <div class="top-bar">
+        <p v-if="title" class="player-title">{{ title }}</p>
         <button @click="toggleSync" class="btn btn-blue">
           {{ showSync ? 'ปิด Sync Slides' : 'Sync Slides กับ Video' }}
         </button>
       </div>
 
-      <!-- Video container: ไม่ใช้ flex ซ้อนกันแล้ว -->
-      <div class="video-wrapper">
-        <video
-          ref="videoRef"
-          controls
-          @play="handlePlay"
-          @pause="handlePause"
-          @seeking="handleSeeking"
-          @seeked="handleSeeked"
-          @ended="handleEnded"
-          @timeupdate="handleTimeUpdate"
-        ></video>
-      </div>
+      <!-- ── Main row: video (ซ้าย 60%) + slide (ขวา 40%) ── -->
+      <div class="content-row">
 
-      <!-- Slide display -->
-      <transition name="fade-slide">
-        <div
-          v-if="currentSlideUrl || pdfMode"
-          class="slide-display"
-        >
-          <div class="slide-label">สไลด์ปัจจุบัน</div>
-          <img
-            v-if="!pdfMode"
-            :src="currentSlideUrl"
-            alt="slide"
-            class="slide-img"
-            :style="{ opacity: slideOpacity, transform: slideTransform }"
-          />
-          <canvas
-            v-else
-            ref="pdfCanvasRef"
-            class="slide-canvas"
-            :style="{ opacity: slideOpacity, transform: slideTransform }"
-          ></canvas>
+        <!-- Video -->
+        <div class="video-col">
+          <video
+            ref="videoRef"
+            controls
+            @play="handlePlay"
+            @pause="handlePause"
+            @seeking="handleSeeking"
+            @seeked="handleSeeked"
+            @ended="handleEnded"
+            @timeupdate="handleTimeUpdate"
+          ></video>
         </div>
-      </transition>
 
-      <!-- Sync Panel -->
+        <!-- Slide -->
+        <div class="slide-col">
+          <template v-if="currentSlideUrl || pdfMode">
+
+            <!-- IMG mode -->
+            <transition name="slide-fade" mode="out-in">
+              <img
+                v-if="!pdfMode"
+                :key="currentSlideUrl"
+                :src="currentSlideUrl"
+                alt="slide"
+                class="slide-img"
+              />
+            </transition>
+
+            <!-- PDF/Canvas mode: ref ต้องไม่หาย จึงใช้ CSS class transition แทน -->
+            <canvas
+              v-if="pdfMode"
+              ref="pdfCanvasRef"
+              class="slide-canvas"
+              :class="{ 'slide-transitioning': isSlideTransitioning }"
+            ></canvas>
+          </template>
+
+          <!-- Placeholder ตอนไม่มีสไลด์ -->
+          <div v-else class="slide-placeholder">
+            <span>ยังไม่มีสไลด์</span>
+          </div>
+        </div>
+
+      </div><!-- /.content-row -->
+
+      <!-- ── Sync Panel (เต็มความกว้าง ด้านล่าง) ── -->
       <div v-if="showSync" class="sync-panel">
         <div class="sync-box">
           <div class="sync-box-title">ซิงก์สไลด์กับเวลาในวิดีโอ</div>
@@ -88,12 +101,13 @@
           <p v-if="syncErrorMessage" class="error-msg">{{ syncErrorMessage }}</p>
         </div>
       </div>
+
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import axios from 'axios';
 import Hls from 'hls.js';
 
@@ -117,8 +131,7 @@ const syncErrorMessage = ref('');
 const pdfMode = ref(false);
 const pdfCanvasRef = ref(null);
 const selectedIndex = ref(0);
-const slideOpacity = ref(1);
-const slideTransform = ref('translateY(0) scale(1)');
+const isSlideTransitioning = ref(false);
 
 const BACKEND_BASE = 'http://localhost:8080';
 let pdfDoc = null;
@@ -128,8 +141,6 @@ let fromTime = 0;
 let heartbeatInterval = null;
 let isSeeking = false;
 let seekDebounceTimer = null;
-
-// throttle timeupdate เพื่อลด layout re-render
 let lastSlideUpdateTime = -1;
 
 const MAX_VALID_INTERVAL = 30;
@@ -140,10 +151,7 @@ const sendTrackingData = async () => {
   if (!videoRef.value || isSeeking) return;
   const currentTime = videoRef.value.currentTime;
   const gap = currentTime - fromTime;
-  if (gap > MAX_VALID_INTERVAL) {
-    fromTime = currentTime;
-    return;
-  }
+  if (gap > MAX_VALID_INTERVAL) { fromTime = currentTime; return; }
   if (currentTime !== fromTime) {
     await axios.post(`${BACKEND_BASE}/api/video/track`, {
       userId, videoId, from: fromTime, to: currentTime, currentTime
@@ -177,9 +185,7 @@ const handleSeeked = () => {
     isSeeking = false;
     const currentTime = videoRef.value.currentTime;
     fromTime = currentTime;
-    axios.post(`${BACKEND_BASE}/api/video/sync`, {
-      userId, videoId, isEnded: false, currentTime
-    }).catch(() => {});
+    axios.post(`${BACKEND_BASE}/api/video/sync`, { userId, videoId, isEnded: false, currentTime }).catch(() => {});
     updateCurrentSlide();
   }, 300);
 };
@@ -188,9 +194,7 @@ const syncAndCalculate = async (isEnded) => {
   await sendTrackingData();
   const current = videoRef.value ? videoRef.value.currentTime : 0;
   const duration = videoRef.value ? videoRef.value.duration : 0;
-  await axios.post(`${BACKEND_BASE}/api/video/sync`, {
-    userId, videoId, isEnded, currentTime: current, videoDuration: duration
-  });
+  await axios.post(`${BACKEND_BASE}/api/video/sync`, { userId, videoId, isEnded, currentTime: current, videoDuration: duration });
 };
 
 const handleEnded = () => { syncAndCalculate(true); };
@@ -205,7 +209,6 @@ const handleBeforeUnload = () => {
   });
 };
 
-// throttle: update slide ทุก 0.5 วินาทีเท่านั้น
 const handleTimeUpdate = () => {
   const t = videoRef.value?.currentTime ?? 0;
   if (Math.abs(t - lastSlideUpdateTime) < 0.5) return;
@@ -279,9 +282,7 @@ const uploadSlides = async () => {
 const loadPdfAndPrepareSlides = async (pdfUrl) => {
   const lib = window['pdfjsLib'];
   pdfDoc = await lib.getDocument(pdfUrl).promise;
-  slides.value = Array.from({ length: pdfDoc.numPages }, (_, i) => ({
-    page: i + 1, imageUrl: '', timestamp: null
-  }));
+  slides.value = Array.from({ length: pdfDoc.numPages }, (_, i) => ({ page: i + 1, imageUrl: '', timestamp: null }));
   selectedIndex.value = 0;
   await renderPageToCanvas(1);
   await generateThumbnailsFromPdf();
@@ -306,49 +307,44 @@ const generateThumbnailsFromPdf = async () => {
     const scale = Math.min(1.0, 160 / base.width);
     const viewport = page.getViewport({ scale });
     const off = document.createElement('canvas');
-    off.width = viewport.width;
-    off.height = viewport.height;
+    off.width = viewport.width; off.height = viewport.height;
     await page.render({ canvasContext: off.getContext('2d'), viewport }).promise;
     const idx = slides.value.findIndex(s => s.page === i);
     if (idx !== -1) slides.value[idx].imageUrl = off.toDataURL('image/png');
   }
 };
 
-const applySlideDisplay = (s) => {
+// img → Vue transition ผ่าน :key
+// canvas → CSS class transition (ref ต้องไม่ถูก destroy)
+const applySlideDisplay = async (s) => {
   if (!s) return;
   if (s.page === currentSlidePage) return;
   currentSlidePage = s.page;
-  slideOpacity.value = 0;
-  slideTransform.value = 'translateY(10px) scale(0.975)';
+
   if (pdfMode.value) {
-    renderPageToCanvas(s.page);
+    isSlideTransitioning.value = true;
+    await new Promise(r => setTimeout(r, 250));
+    await nextTick();
+    await renderPageToCanvas(s.page);
+    isSlideTransitioning.value = false;
   } else {
     currentSlideUrl.value = getImageUrl(s);
   }
-  setTimeout(() => {
-    slideOpacity.value = 1;
-    slideTransform.value = 'translateY(0) scale(1)';
-  }, 150);
 };
 
 const prevSlide = () => {
   if (!slides.value.length) return;
   selectedIndex.value = Math.max(0, selectedIndex.value - 1);
-  const s = slides.value[selectedIndex.value];
-  applySlideDisplay(s);
+  applySlideDisplay(slides.value[selectedIndex.value]);
 };
 
 const nextSlide = () => {
   if (!slides.value.length) return;
   selectedIndex.value = Math.min(slides.value.length - 1, selectedIndex.value + 1);
-  const s = slides.value[selectedIndex.value];
-  applySlideDisplay(s);
+  applySlideDisplay(slides.value[selectedIndex.value]);
 };
 
-const showSelectedSlide = () => {
-  const s = slides.value[selectedIndex.value];
-  applySlideDisplay(s);
-};
+const showSelectedSlide = () => { applySlideDisplay(slides.value[selectedIndex.value]); };
 
 const toggleSync = () => {
   showSync.value = !showSync.value;
@@ -385,11 +381,7 @@ const saveSync = async () => {
 
 const updateCurrentSlide = () => {
   if (!slides.value.length || !videoRef.value) { currentSlideUrl.value = ''; return; }
-
-  if (showSync.value) {
-    showSelectedSlide();
-    return;
-  }
+  if (showSync.value) { showSelectedSlide(); return; }
 
   const t = videoRef.value.currentTime;
   const candidates = slides.value.filter(s => typeof s.timestamp === 'number' && s.timestamp <= t);
@@ -444,82 +436,150 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* ─── Wrapper ─────────────────────────────────────────────── */
 .player-wrapper {
   width: 100%;
-  display: flex;
-  justify-content: center;
   font-family: sans-serif;
+  box-sizing: border-box;
 }
 
 .player-inner {
   width: 100%;
-  max-width: 800px;
-  text-align: center;
+  max-width: 1280px;
+  margin: 0 auto;
   box-sizing: border-box;
+}
+
+/* ─── Top bar ─────────────────────────────────────────────── */
+.top-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 0 12px;
 }
 
 .player-title {
   color: #ddd;
-  margin-bottom: 8px;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
 }
 
-.sync-toggle-bar {
-  margin-bottom: 12px;
+/* ปุ่ม sync ลอยชิดขวา โดยไม่ดัน title ออกจากกลาง */
+.top-bar .btn {
+  position: absolute;
+  right: 0;
 }
 
-/* ── แก้หลัก: ไม่ใช้ flex ซ้อนกัน ── */
-.video-wrapper {
+/* ─── Main content row ────────────────────────────────────── */
+.content-row {
+  display: flex;
+  gap: 12px;
   width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.content-row::-webkit-scrollbar {
+  display: none;
 }
 
-.video-wrapper video {
+/* Video: 50% */
+.video-col {
+  flex: 0 0 calc(50% - 6px);
+  min-width: 320px;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.video-col video {
   width: 100%;
-  height: auto;
+  height: 100%;
   display: block;
   object-fit: contain;
 }
 
-/* ── Slide display ── */
-.slide-display {
-  margin-top: 12px;
-}
-
-.slide-label {
-  font-size: 12px;
-  color: #aaa;
-  margin-bottom: 6px;
+/* Slide: 50% */
+.slide-col {
+  flex: 0 0 calc(50% - 6px);
+  min-width: 320px;
+  aspect-ratio: 16 / 9;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  background: #0f172a;
 }
 
 .slide-img {
   width: 100%;
-  max-height: 360px;
+  height: 100%;
   object-fit: contain;
-  border: 1px solid #374151;
-  border-radius: 8px;
+  display: block;
 }
 
 .slide-canvas {
   width: 100%;
-  max-height: 360px;
-  border: 1px solid #374151;
-  border-radius: 8px;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  transition: opacity 0.25s ease, transform 0.25s ease;
 }
 
-/* ── Sync Panel ── */
+.slide-canvas.slide-transitioning {
+  opacity: 0;
+  transform: scale(0.97);
+}
+
+.slide-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+/* ─── Slide transition (img mode) ────────────────────────── */
+.slide-fade-enter-active {
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+.slide-fade-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.slide-fade-enter-from {
+  opacity: 0;
+  transform: translateY(10px) scale(0.97);
+}
+.slide-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(1.01);
+}
+
+/* ─── Sync Panel ──────────────────────────────────────────── */
 .sync-panel {
   margin-top: 16px;
   text-align: left;
 }
 
 .sync-box {
-  padding: 12px;
+  padding: 14px;
   border: 1px solid #374151;
   border-radius: 8px;
+  background: #0f172a;
 }
 
 .sync-box-title {
   font-weight: 600;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+  color: #e2e8f0;
 }
 
 .upload-row {
@@ -527,11 +587,10 @@ onMounted(async () => {
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
-.file-input {
-  flex: 1;
-}
+.file-input { flex: 1; min-width: 0; }
 
 .slide-nav {
   display: flex;
@@ -540,76 +599,47 @@ onMounted(async () => {
   margin-bottom: 10px;
 }
 
-.slide-counter {
-  font-size: 12px;
-  color: #ddd;
-}
-
-.slide-time-label {
-  font-size: 12px;
-  color: #aaa;
-  margin-bottom: 8px;
-}
+.slide-counter { font-size: 12px; color: #ddd; }
+.slide-time-label { font-size: 12px; color: #aaa; margin-bottom: 8px; }
 
 .slide-list {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 10px;
-}
-
-.slide-row {
-  display: flex;
   gap: 8px;
-  align-items: center;
 }
 
-.slide-page-label {
-  font-size: 12px;
-  width: 80px;
-  flex-shrink: 0;
-}
+.slide-row { display: flex; gap: 8px; align-items: center; }
+
+.slide-page-label { font-size: 12px; width: 60px; flex-shrink: 0; color: #cbd5e1; }
 
 .timestamp-input {
   flex: 1;
   padding: 6px;
   border-radius: 6px;
   border: 1px solid #374151;
-  background: #111827;
+  background: #1e293b;
   color: #fff;
 }
 
-.sync-actions {
-  margin-top: 12px;
-  display: flex;
-  gap: 8px;
-}
+.sync-actions { margin-top: 12px; display: flex; gap: 8px; }
 
-.error-msg {
-  color: #fb7185;
-  margin-top: 10px;
-}
+.error-msg { color: #fb7185; margin-top: 10px; }
 
-/* ── Buttons ── */
+/* ─── Buttons ─────────────────────────────────────────────── */
 .btn {
-  padding: 6px 10px;
-  border-radius: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
   border: none;
   cursor: pointer;
   font-size: 13px;
+  white-space: nowrap;
 }
 
-.btn-blue  { background: #3b82f6; color: #fff; border-radius: 999px; }
+.btn-blue  { background: #3b82f6; color: #fff; }
 .btn-green { background: #10b981; color: #fff; }
 .btn-gray  { background: #6b7280; color: #fff; }
 
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
-/* ── Slide transition ── */
-.slide-img,
-.slide-canvas {
-  transition: opacity 1s ease, transform 1s ease;
-}
+/* มือถือ: scroll ซ้ายขวาได้ ไม่ต้องเพิ่ม media query */
 </style>
