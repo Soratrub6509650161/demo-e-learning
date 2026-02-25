@@ -1,0 +1,29 @@
+[
+  {
+    "id": "8101bd57-a6bf-4629-b91c-775f6e290b56",
+    "title": "Test",
+    "filename": "à¸à¸²à¸£à¹à¸¢à¸à¸à¸¢à¸°.mp4",
+    "hlsPath": "C:\\Users\\soratrub_nak.FREEWILLGROUP\\Desktop\\demo e-learning\\demo-poc-be-express\\uploads\\8101bd57-a6bf-4629-b91c-775f6e290b56",
+    "m3u8Url": "/api/videos/stream/8101bd57-a6bf-4629-b91c-775f6e290b56/playlist.m3u8",
+    "duration": 0,
+    "uploadedAt": "2026-02-25T12:43:45.130Z",
+    "status": "ready",
+    "description": "",
+    "slideCues": [
+      {
+        "page": 1,
+        "time": 0.03
+      },
+      {
+        "page": 2,
+        "time": 0.05
+      },
+      {
+        "page": 3,
+        "time": 0.07
+      }
+    ],
+    "slidesPdfPath": "C:\\Users\\soratrub_nak.FREEWILLGROUP\\Desktop\\demo e-learning\\demo-poc-be-express\\uploads\\8101bd57-a6bf-4629-b91c-775f6e290b56\\slides\\slides.pdf",
+    "slidesPdfUrl": "/api/videos/8101bd57-a6bf-4629-b91c-775f6e290b56/slides.pdf"
+  }
+]
