@@ -28,7 +28,6 @@
         <div
           v-if="currentSlideUrl || pdfMode"
           class="slide-display"
-          :key="currentSlideKey"
         >
           <div class="slide-label">สไลด์ปัจจุบัน</div>
           <img
@@ -36,8 +35,14 @@
             :src="currentSlideUrl"
             alt="slide"
             class="slide-img"
+            :style="{ opacity: slideOpacity, transform: slideTransform }"
           />
-          <canvas v-else ref="pdfCanvasRef" class="slide-canvas"></canvas>
+          <canvas
+            v-else
+            ref="pdfCanvasRef"
+            class="slide-canvas"
+            :style="{ opacity: slideOpacity, transform: slideTransform }"
+          ></canvas>
         </div>
       </transition>
 
@@ -112,7 +117,8 @@ const syncErrorMessage = ref('');
 const pdfMode = ref(false);
 const pdfCanvasRef = ref(null);
 const selectedIndex = ref(0);
-const currentSlideKey = ref(0);
+const slideOpacity = ref(1);
+const slideTransform = ref('translateY(0) scale(1)');
 
 const BACKEND_BASE = 'http://localhost:8080';
 let pdfDoc = null;
@@ -308,23 +314,40 @@ const generateThumbnailsFromPdf = async () => {
   }
 };
 
+const applySlideDisplay = (s) => {
+  if (!s) return;
+  if (s.page === currentSlidePage) return;
+  currentSlidePage = s.page;
+  slideOpacity.value = 0;
+  slideTransform.value = 'translateY(10px) scale(0.975)';
+  if (pdfMode.value) {
+    renderPageToCanvas(s.page);
+  } else {
+    currentSlideUrl.value = getImageUrl(s);
+  }
+  setTimeout(() => {
+    slideOpacity.value = 1;
+    slideTransform.value = 'translateY(0) scale(1)';
+  }, 150);
+};
+
 const prevSlide = () => {
   if (!slides.value.length) return;
   selectedIndex.value = Math.max(0, selectedIndex.value - 1);
-  showSelectedSlide();
+  const s = slides.value[selectedIndex.value];
+  applySlideDisplay(s);
 };
 
 const nextSlide = () => {
   if (!slides.value.length) return;
   selectedIndex.value = Math.min(slides.value.length - 1, selectedIndex.value + 1);
-  showSelectedSlide();
+  const s = slides.value[selectedIndex.value];
+  applySlideDisplay(s);
 };
 
 const showSelectedSlide = () => {
   const s = slides.value[selectedIndex.value];
-  if (!s) return;
-  if (pdfMode.value) renderPageToCanvas(s.page);
-  else currentSlideUrl.value = getImageUrl(s);
+  applySlideDisplay(s);
 };
 
 const toggleSync = () => {
@@ -374,8 +397,7 @@ const updateCurrentSlide = () => {
     ? candidates.reduce((a, b) => a.timestamp > b.timestamp ? a : b)
     : slides.value[0];
 
-  if (pdfMode.value) renderPageToCanvas(s.page);
-  else currentSlideUrl.value = getImageUrl(s);
+  applySlideDisplay(s);
 };
 
 // ─── Lifecycle ───────────────────────────────────────────────
@@ -583,5 +605,11 @@ onMounted(async () => {
 .btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* ── Slide transition ── */
+.slide-img,
+.slide-canvas {
+  transition: opacity 1s ease, transform 1s ease;
 }
 </style>
