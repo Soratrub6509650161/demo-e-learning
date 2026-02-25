@@ -25,6 +25,10 @@ app.post(
   uploadMiddleware,
   videoController.uploadVideo
 );
+app.post("/api/videos/:id/slides", uploadMiddleware, videoController.uploadSlides);
+app.get("/api/videos/stream/:id/slides/:imageName", videoController.serveSlideImage);
+app.get("/api/videos/:id/slides", videoController.getSlides);
+app.post("/api/videos/:id/slides/sync", videoController.syncSlides);
 app.get(
   "/api/videos/stream/:id/playlist.m3u8",
   videoController.servePlaylist

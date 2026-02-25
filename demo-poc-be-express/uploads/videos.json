@@ -24,6 +24,23 @@
       }
     ],
     "slidesPdfPath": "C:\\Users\\soratrub_nak.FREEWILLGROUP\\Desktop\\demo e-learning\\demo-poc-be-express\\uploads\\8101bd57-a6bf-4629-b91c-775f6e290b56\\slides\\slides.pdf",
-    "slidesPdfUrl": "/api/videos/8101bd57-a6bf-4629-b91c-775f6e290b56/slides.pdf"
+    "slidesPdfUrl": "/api/videos/8101bd57-a6bf-4629-b91c-775f6e290b56/slides.pdf",
+    "slides": [
+      {
+        "page": 1,
+        "imageUrl": "",
+        "timestamp": 5
+      },
+      {
+        "page": 2,
+        "imageUrl": "",
+        "timestamp": 7
+      },
+      {
+        "page": 3,
+        "imageUrl": "",
+        "timestamp": 15
+      }
+    ]
   }
 ]

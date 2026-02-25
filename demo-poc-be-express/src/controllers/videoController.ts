@@ -4,8 +4,15 @@ import fs from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { spawn } from "child_process";
+import { fromPath } from "pdf2pic";
 
 type VideoStatus = "processing" | "ready" | "error";
+
+export interface SlideRecord {
+  page: number;
+  imageUrl: string;
+  timestamp: number | null;
+}
 
 interface StoredVideo {
   id: string;
@@ -18,6 +25,8 @@ interface StoredVideo {
   status: VideoStatus;
   error?: string;
   description?: string;
+  slides?: SlideRecord[];
+  pdfUrl?: string;
 }
 
 const uploadsDir = path.join(__dirname, "..", "..", "uploads");
@@ -174,6 +183,67 @@ class VideoController {
     });
   };
 
+  uploadSlides = async (req: Request, res: Response): Promise<void> => {
+    const { id } = req.params;
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) {
+      res.status(400).json({ message: "No slide file uploaded" });
+      return;
+    }
+    const videos = readVideos();
+    const videoIndex = videos.findIndex((v) => v.id === id);
+    if (videoIndex === -1) {
+      res.status(404).json({ message: "Video not found" });
+      return;
+    }
+    const videoDir = path.join(uploadsDir, id);
+    const slidesDir = path.join(videoDir, "slides");
+    if (!fs.existsSync(slidesDir)) {
+      fs.mkdirSync(slidesDir, { recursive: true });
+    }
+    const pdfPath = path.join(slidesDir, "presentation.pdf");
+    fs.renameSync(file.path, pdfPath);
+    try {
+      const options = {
+        density: 150,
+        saveFilename: "page",
+        savePath: slidesDir,
+        format: "png",
+        width: 1280,
+        height: 720,
+      };
+      const convert = fromPath(pdfPath, options);
+      const results = await convert.bulk(-1, { responseType: "image" });
+      const slidesData: SlideRecord[] = results.map((result: any) => ({
+        page: result.page,
+        imageUrl: `/api/videos/stream/${id}/slides/${result.name}`,
+        timestamp: null,
+      }));
+      videos[videoIndex].slides = slidesData;
+      writeVideos(videos);
+      res.json({ message: "Slides uploaded and converted successfully", slides: slidesData });
+    } catch (error) {
+      const fallbackPdfUrl = `/api/videos/stream/${id}/slides/presentation.pdf`;
+      videos[videoIndex].pdfUrl = fallbackPdfUrl;
+      writeVideos(videos);
+      res.json({
+        message: "PDF stored without image conversion. Using client-side rendering.",
+        pdfUrl: fallbackPdfUrl,
+        slides: []
+      });
+    }
+  };
+
+  serveSlideImage = (req: Request, res: Response): void => {
+    const { id, imageName } = req.params;
+    const imagePath = path.join(uploadsDir, id, "slides", imageName);
+    if (!fs.existsSync(imagePath)) {
+      res.status(404).send("Slide image not found");
+      return;
+    }
+    res.sendFile(imagePath);
+  };
+
   /**
    * GET /api/videos/stream/:id/playlist.m3u8
    * Serve HLS playlist
@@ -237,6 +307,60 @@ class VideoController {
     }
 
     res.json({ message: "Video deleted" });
+  };
+
+  getSlides = (req: Request, res: Response): void => {
+    const { id } = req.params;
+    const videos = readVideos();
+    const idx = videos.findIndex((v) => v.id === id);
+    if (idx === -1) {
+      res.status(404).json({ message: "Video not found" });
+      return;
+    }
+    const slides = videos[idx].slides || [];
+    const pdfUrl = videos[idx].pdfUrl || null;
+    res.json({ slides, pdfUrl });
+  };
+
+  syncSlides = (req: Request, res: Response): void => {
+    const { id } = req.params;
+    const { slides } = req.body as { slides: { page: number; timestamp: number }[] };
+
+    if (!Array.isArray(slides)) {
+      res.status(400).json({ message: "Invalid slides payload" });
+      return;
+    }
+
+    const videos = readVideos();
+    const idx = videos.findIndex((v) => v.id === id);
+    if (idx === -1) {
+      res.status(404).json({ message: "Video not found" });
+      return;
+    }
+
+    const existing = videos[idx].slides || [];
+    const map = new Map<number, number>();
+    slides.forEach((s: { page: number; timestamp: number }) => {
+      if (typeof s.page === "number" && typeof s.timestamp === "number" && s.timestamp >= 0) {
+        map.set(s.page, s.timestamp);
+      }
+    });
+
+    let updated: SlideRecord[];
+    if (existing.length === 0) {
+      updated = slides
+        .filter(s => typeof s.page === "number")
+        .map(s => ({ page: s.page, imageUrl: "", timestamp: map.get(s.page) ?? null }));
+    } else {
+      updated = existing.map((s: SlideRecord) => {
+        const ts = map.get(s.page);
+        return { ...s, timestamp: typeof ts === "number" ? ts : s.timestamp };
+      });
+    }
+
+    videos[idx].slides = updated;
+    writeVideos(videos);
+    res.json({ message: "Slides synced", slides: updated });
   };
 }
 

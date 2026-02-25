@@ -1,19 +1,89 @@
 <template>
-  <div style="max-width: 800px; margin: auto; text-align: center; font-family: sans-serif;">
-    <h2>🎥 E-Learning Video Player</h2>
-    <p v-if="title" style="color: #ddd; margin-bottom: 8px;">{{ title }}</p>
-    
-    <video 
-      ref="videoRef"
-      width="100%" 
-      controls
-      @play="handlePlay"
-      @pause="handlePause"
-      @seeking="handleSeeking"
-      @seeked="handleSeeked"
-      @ended="handleEnded"
-    ></video>
-    
+  <div class="player-wrapper">
+    <div class="player-inner">
+      <p v-if="title" class="player-title">{{ title }}</p>
+
+      <div class="sync-toggle-bar">
+        <button @click="toggleSync" class="btn btn-blue">
+          {{ showSync ? 'ปิด Sync Slides' : 'Sync Slides กับ Video' }}
+        </button>
+      </div>
+
+      <!-- Video container: ไม่ใช้ flex ซ้อนกันแล้ว -->
+      <div class="video-wrapper">
+        <video
+          ref="videoRef"
+          controls
+          @play="handlePlay"
+          @pause="handlePause"
+          @seeking="handleSeeking"
+          @seeked="handleSeeked"
+          @ended="handleEnded"
+          @timeupdate="handleTimeUpdate"
+        ></video>
+      </div>
+
+      <!-- Slide display -->
+      <transition name="fade-slide">
+        <div
+          v-if="currentSlideUrl || pdfMode"
+          class="slide-display"
+          :key="currentSlideKey"
+        >
+          <div class="slide-label">สไลด์ปัจจุบัน</div>
+          <img
+            v-if="!pdfMode"
+            :src="currentSlideUrl"
+            alt="slide"
+            class="slide-img"
+          />
+          <canvas v-else ref="pdfCanvasRef" class="slide-canvas"></canvas>
+        </div>
+      </transition>
+
+      <!-- Sync Panel -->
+      <div v-if="showSync" class="sync-panel">
+        <div class="sync-box">
+          <div class="sync-box-title">ซิงก์สไลด์กับเวลาในวิดีโอ</div>
+
+          <div class="upload-row">
+            <input ref="slideFileInput" type="file" accept="application/pdf" class="file-input" />
+            <button @click="uploadSlides" :disabled="syncSubmitting" class="btn btn-green">
+              {{ syncSubmitting ? 'กำลังอัปโหลด...' : 'อัปโหลดสไลด์ PDF' }}
+            </button>
+          </div>
+
+          <div v-if="slides.length" class="slide-nav">
+            <button @click="prevSlide" class="btn btn-gray">← ก่อนหน้า</button>
+            <span class="slide-counter">หน้า {{ selectedIndex + 1 }} / {{ slides.length }}</span>
+            <button @click="nextSlide" class="btn btn-gray">ถัดไป →</button>
+          </div>
+
+          <div v-if="slides.length" class="slide-time-label">ตั้งเวลาให้แต่ละหน้า</div>
+
+          <div v-if="slides.length" class="slide-list">
+            <div v-for="s in slides" :key="s.page" class="slide-row">
+              <div class="slide-page-label">หน้า {{ s.page }}</div>
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                v-model.number="s.timestamp"
+                class="timestamp-input"
+              />
+              <button @click="setTimestampFromVideo(s.page)" class="btn btn-blue">ใช้เวลาวิดีโอ</button>
+            </div>
+          </div>
+
+          <div v-if="slides.length" class="sync-actions">
+            <button @click="saveSync" :disabled="syncSubmitting" class="btn btn-blue">บันทึกการซิงก์</button>
+            <button @click="fetchSlides" class="btn btn-gray">รีเฟรชสไลด์</button>
+          </div>
+
+          <p v-if="syncErrorMessage" class="error-msg">{{ syncErrorMessage }}</p>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -23,53 +93,55 @@ import axios from 'axios';
 import Hls from 'hls.js';
 
 const props = defineProps({
-  userId: {
-    type: String,
-    default: 'user_01'
-  },
-  videoId: {
-    type: String,
-    required: true
-  },
-  videoSrc: {
-    type: String,
-    required: true
-  },
-  title: {
-    type: String,
-    default: ''
-  }
+  userId: { type: String, default: 'user_01' },
+  videoId: { type: String, required: true },
+  videoSrc: { type: String, required: true },
+  title: { type: String, default: '' }
 });
 
 const videoRef = ref(null);
 const userId = props.userId;
 const videoId = props.videoId;
 
+const showSync = ref(false);
+const slides = ref([]);
+const currentSlideUrl = ref('');
+const slideFileInput = ref(null);
+const syncSubmitting = ref(false);
+const syncErrorMessage = ref('');
+const pdfMode = ref(false);
+const pdfCanvasRef = ref(null);
+const selectedIndex = ref(0);
+const currentSlideKey = ref(0);
+
+const BACKEND_BASE = 'http://localhost:8080';
+let pdfDoc = null;
+let lastRenderedPage = 0;
+let currentSlidePage = 0;
 let fromTime = 0;
 let heartbeatInterval = null;
 let isSeeking = false;
 let seekDebounceTimer = null;
 
+// throttle timeupdate เพื่อลด layout re-render
+let lastSlideUpdateTime = -1;
+
 const MAX_VALID_INTERVAL = 30;
 
-const sendTrackingData = async () => {
-  if (!videoRef.value) return;
-  if (isSeeking) return;
+// ─── Tracking ────────────────────────────────────────────────
 
+const sendTrackingData = async () => {
+  if (!videoRef.value || isSeeking) return;
   const currentTime = videoRef.value.currentTime;
   const gap = currentTime - fromTime;
-
   if (gap > MAX_VALID_INTERVAL) {
-    console.log(`⚠️ [Skip] Gap too large (${gap.toFixed(1)}s), likely from seek — not tracked`);
     fromTime = currentTime;
     return;
   }
-
   if (currentTime !== fromTime) {
-    await axios.post('http://localhost:8080/api/video/track', {
+    await axios.post(`${BACKEND_BASE}/api/video/track`, {
       userId, videoId, from: fromTime, to: currentTime, currentTime
     });
-    console.log(`📤 [Redis] Tracked: ${fromTime.toFixed(1)}s - ${currentTime.toFixed(1)}s`);
     fromTime = currentTime;
   }
 };
@@ -77,14 +149,14 @@ const sendTrackingData = async () => {
 const handlePlay = () => {
   fromTime = videoRef.value.currentTime;
   heartbeatInterval = setInterval(sendTrackingData, 5000);
-  console.log("▶️ Video started (Heartbeat started)");
+  updateCurrentSlide();
 };
 
 const handlePause = () => {
   if (isSeeking) return;
   clearInterval(heartbeatInterval);
   sendTrackingData();
-  console.log("⏸️ Video paused");
+  updateCurrentSlide();
 };
 
 const handleSeeking = () => {
@@ -99,11 +171,10 @@ const handleSeeked = () => {
     isSeeking = false;
     const currentTime = videoRef.value.currentTime;
     fromTime = currentTime;
-    console.log(`⏩ Seeked to: ${currentTime.toFixed(1)}s`);
-
-    axios.post('http://localhost:8080/api/video/sync', {
+    axios.post(`${BACKEND_BASE}/api/video/sync`, {
       userId, videoId, isEnded: false, currentTime
-    }).catch(err => console.error("Failed to sync after seek", err));
+    }).catch(() => {});
+    updateCurrentSlide();
   }, 300);
 };
 
@@ -111,26 +182,16 @@ const syncAndCalculate = async (isEnded) => {
   await sendTrackingData();
   const current = videoRef.value ? videoRef.value.currentTime : 0;
   const duration = videoRef.value ? videoRef.value.duration : 0;
-
-  await axios.post('http://localhost:8080/api/video/sync', {
+  await axios.post(`${BACKEND_BASE}/api/video/sync`, {
     userId, videoId, isEnded, currentTime: current, videoDuration: duration
   });
-  console.log(`⚡ [DB] Sync sent (isEnded: ${isEnded})`);
 };
 
-const handleEnded = () => {
-  console.log("✅ Video ended");
-  syncAndCalculate(true);
-};
-
-const forceExit = () => {
-  console.log("🚪 User exited the page");
-  syncAndCalculate(false);
-};
+const handleEnded = () => { syncAndCalculate(true); };
 
 const handleBeforeUnload = () => {
   const current = videoRef.value ? videoRef.value.currentTime : 0;
-  fetch('http://localhost:8080/api/video/sync', {
+  fetch(`${BACKEND_BASE}/api/video/sync`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId, videoId, isEnded: false, currentTime: current }),
@@ -138,44 +199,389 @@ const handleBeforeUnload = () => {
   });
 };
 
+// throttle: update slide ทุก 0.5 วินาทีเท่านั้น
+const handleTimeUpdate = () => {
+  const t = videoRef.value?.currentTime ?? 0;
+  if (Math.abs(t - lastSlideUpdateTime) < 0.5) return;
+  lastSlideUpdateTime = t;
+  updateCurrentSlide();
+};
+
+// ─── Slides ──────────────────────────────────────────────────
+
+const getImageUrl = (s) => {
+  const url = s.imageUrl || '';
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (url.startsWith('/api/')) return `${BACKEND_BASE}${url}`;
+  return url;
+};
+
+const fetchSlides = async () => {
+  try {
+    const res = await axios.get(`${BACKEND_BASE}/api/videos/${videoId}/slides`);
+    const arr = Array.isArray(res.data) ? res.data : (Array.isArray(res.data.slides) ? res.data.slides : []);
+    const pdfUrl = (!Array.isArray(res.data) && res.data.pdfUrl)
+      ? res.data.pdfUrl
+      : `${BACKEND_BASE}/api/videos/stream/${videoId}/slides/presentation.pdf`;
+
+    if (!arr.length) {
+      await loadPdfAndPrepareSlides(pdfUrl);
+      pdfMode.value = true;
+    } else if (arr.some(s => !s.imageUrl)) {
+      await loadPdfAndPrepareSlides(pdfUrl);
+      pdfMode.value = true;
+      arr.forEach(s => {
+        const idx = slides.value.findIndex(x => x.page === s.page);
+        if (idx !== -1 && typeof s.timestamp === 'number') slides.value[idx].timestamp = s.timestamp;
+      });
+    } else {
+      slides.value = arr;
+      pdfMode.value = false;
+    }
+    selectedIndex.value = 0;
+  } catch {
+    slides.value = [];
+  }
+};
+
+const uploadSlides = async () => {
+  if (!slideFileInput.value?.files.length) return;
+  const form = new FormData();
+  form.append('file', slideFileInput.value.files[0]);
+  syncSubmitting.value = true;
+  try {
+    const res = await axios.post(`${BACKEND_BASE}/api/videos/${videoId}/slides`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    if (res.data?.slides?.length) {
+      slides.value = res.data.slides;
+      pdfMode.value = false;
+    } else {
+      const pdfUrl = res.data?.pdfUrl || `${BACKEND_BASE}/api/videos/stream/${videoId}/slides/presentation.pdf`;
+      await loadPdfAndPrepareSlides(pdfUrl);
+      pdfMode.value = true;
+    }
+    slideFileInput.value.value = '';
+    syncErrorMessage.value = '';
+  } catch {
+    syncErrorMessage.value = 'อัปโหลด/แปลงสไลด์ไม่สำเร็จ กรุณาตรวจสอบเซิร์ฟเวอร์';
+  } finally {
+    syncSubmitting.value = false;
+  }
+};
+
+const loadPdfAndPrepareSlides = async (pdfUrl) => {
+  const lib = window['pdfjsLib'];
+  pdfDoc = await lib.getDocument(pdfUrl).promise;
+  slides.value = Array.from({ length: pdfDoc.numPages }, (_, i) => ({
+    page: i + 1, imageUrl: '', timestamp: null
+  }));
+  selectedIndex.value = 0;
+  await renderPageToCanvas(1);
+  await generateThumbnailsFromPdf();
+};
+
+const renderPageToCanvas = async (pageNum) => {
+  if (!pdfDoc || !pdfCanvasRef.value || lastRenderedPage === pageNum) return;
+  const page = await pdfDoc.getPage(pageNum);
+  const viewport = page.getViewport({ scale: 1.2 });
+  const canvas = pdfCanvasRef.value;
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  lastRenderedPage = pageNum;
+};
+
+const generateThumbnailsFromPdf = async () => {
+  if (!pdfDoc) return;
+  for (let i = 1; i <= pdfDoc.numPages; i++) {
+    const page = await pdfDoc.getPage(i);
+    const base = page.getViewport({ scale: 1.0 });
+    const scale = Math.min(1.0, 160 / base.width);
+    const viewport = page.getViewport({ scale });
+    const off = document.createElement('canvas');
+    off.width = viewport.width;
+    off.height = viewport.height;
+    await page.render({ canvasContext: off.getContext('2d'), viewport }).promise;
+    const idx = slides.value.findIndex(s => s.page === i);
+    if (idx !== -1) slides.value[idx].imageUrl = off.toDataURL('image/png');
+  }
+};
+
+const prevSlide = () => {
+  if (!slides.value.length) return;
+  selectedIndex.value = Math.max(0, selectedIndex.value - 1);
+  showSelectedSlide();
+};
+
+const nextSlide = () => {
+  if (!slides.value.length) return;
+  selectedIndex.value = Math.min(slides.value.length - 1, selectedIndex.value + 1);
+  showSelectedSlide();
+};
+
+const showSelectedSlide = () => {
+  const s = slides.value[selectedIndex.value];
+  if (!s) return;
+  if (pdfMode.value) renderPageToCanvas(s.page);
+  else currentSlideUrl.value = getImageUrl(s);
+};
+
+const toggleSync = () => {
+  showSync.value = !showSync.value;
+  if (showSync.value) fetchSlides().then(showSelectedSlide);
+};
+
+const handleKeyDown = (e) => {
+  if (!showSync.value) return;
+  const tag = e.target?.tagName?.toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return;
+  if (e.key === 'ArrowRight') { e.preventDefault(); nextSlide(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); prevSlide(); }
+};
+
+const setTimestampFromVideo = (page) => {
+  if (!videoRef.value) return;
+  const idx = slides.value.findIndex(s => s.page === page);
+  if (idx !== -1) slides.value[idx].timestamp = Number(videoRef.value.currentTime.toFixed(1));
+};
+
+const saveSync = async () => {
+  syncSubmitting.value = true;
+  try {
+    const res = await axios.post(`${BACKEND_BASE}/api/videos/${videoId}/slides/sync`, {
+      slides: slides.value
+        .map(s => ({ page: s.page, timestamp: typeof s.timestamp === 'number' ? s.timestamp : null }))
+        .filter(x => typeof x.timestamp === 'number' && x.timestamp >= 0)
+    });
+    if (res.data?.slides) slides.value = res.data.slides;
+  } catch {} finally {
+    syncSubmitting.value = false;
+  }
+};
+
+const updateCurrentSlide = () => {
+  if (!slides.value.length || !videoRef.value) { currentSlideUrl.value = ''; return; }
+
+  if (showSync.value) {
+    showSelectedSlide();
+    return;
+  }
+
+  const t = videoRef.value.currentTime;
+  const candidates = slides.value.filter(s => typeof s.timestamp === 'number' && s.timestamp <= t);
+  const s = candidates.length
+    ? candidates.reduce((a, b) => a.timestamp > b.timestamp ? a : b)
+    : slides.value[0];
+
+  if (pdfMode.value) renderPageToCanvas(s.page);
+  else currentSlideUrl.value = getImageUrl(s);
+};
+
+// ─── Lifecycle ───────────────────────────────────────────────
+
 onBeforeUnmount(() => {
   clearInterval(heartbeatInterval);
   clearTimeout(seekDebounceTimer);
   syncAndCalculate(false);
   window.removeEventListener('beforeunload', handleBeforeUnload);
+  window.removeEventListener('keydown', handleKeyDown);
 });
 
 onMounted(async () => {
   const video = videoRef.value;
-  const videoSrc = props.videoSrc;
-
   window.addEventListener('beforeunload', handleBeforeUnload);
+  window.addEventListener('keydown', handleKeyDown);
 
   let savedTime = 0;
   try {
-    const response = await axios.get(`http://localhost:8080/api/video/resume?userId=${userId}&videoId=${videoId}`);
-    savedTime = response.data;
-    if (savedTime > 0) {
-      console.log(`📥 [System] Resume history found, jumping to ${savedTime.toFixed(1)}s`);
-      fromTime = savedTime;
-    }
-  } catch (error) {
-    console.error("Failed to fetch resume time", error);
-  }
+    const res = await axios.get(`${BACKEND_BASE}/api/video/resume?userId=${userId}&videoId=${videoId}`);
+    savedTime = res.data;
+    if (savedTime > 0) fromTime = savedTime;
+  } catch {}
+
+  await fetchSlides();
+  updateCurrentSlide();
 
   if (Hls.isSupported()) {
     const hls = new Hls();
-    hls.loadSource(videoSrc);
+    hls.loadSource(props.videoSrc);
     hls.attachMedia(video);
-
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       if (savedTime > 0) video.currentTime = savedTime;
+      updateCurrentSlide();
     });
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    video.src = videoSrc;
+    video.src = props.videoSrc;
     video.addEventListener('loadedmetadata', () => {
       if (savedTime > 0) video.currentTime = savedTime;
+      updateCurrentSlide();
     });
   }
 });
 </script>
+
+<style scoped>
+.player-wrapper {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  font-family: sans-serif;
+}
+
+.player-inner {
+  width: 100%;
+  max-width: 800px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.player-title {
+  color: #ddd;
+  margin-bottom: 8px;
+}
+
+.sync-toggle-bar {
+  margin-bottom: 12px;
+}
+
+/* ── แก้หลัก: ไม่ใช้ flex ซ้อนกัน ── */
+.video-wrapper {
+  width: 100%;
+}
+
+.video-wrapper video {
+  width: 100%;
+  height: auto;
+  display: block;
+  object-fit: contain;
+}
+
+/* ── Slide display ── */
+.slide-display {
+  margin-top: 12px;
+}
+
+.slide-label {
+  font-size: 12px;
+  color: #aaa;
+  margin-bottom: 6px;
+}
+
+.slide-img {
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  border: 1px solid #374151;
+  border-radius: 8px;
+}
+
+.slide-canvas {
+  width: 100%;
+  max-height: 360px;
+  border: 1px solid #374151;
+  border-radius: 8px;
+}
+
+/* ── Sync Panel ── */
+.sync-panel {
+  margin-top: 16px;
+  text-align: left;
+}
+
+.sync-box {
+  padding: 12px;
+  border: 1px solid #374151;
+  border-radius: 8px;
+}
+
+.sync-box-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.upload-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.file-input {
+  flex: 1;
+}
+
+.slide-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.slide-counter {
+  font-size: 12px;
+  color: #ddd;
+}
+
+.slide-time-label {
+  font-size: 12px;
+  color: #aaa;
+  margin-bottom: 8px;
+}
+
+.slide-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.slide-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.slide-page-label {
+  font-size: 12px;
+  width: 80px;
+  flex-shrink: 0;
+}
+
+.timestamp-input {
+  flex: 1;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid #374151;
+  background: #111827;
+  color: #fff;
+}
+
+.sync-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+}
+
+.error-msg {
+  color: #fb7185;
+  margin-top: 10px;
+}
+
+/* ── Buttons ── */
+.btn {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.btn-blue  { background: #3b82f6; color: #fff; border-radius: 999px; }
+.btn-green { background: #10b981; color: #fff; }
+.btn-gray  { background: #6b7280; color: #fff; }
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+</style>
