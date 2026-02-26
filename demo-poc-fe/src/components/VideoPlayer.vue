@@ -28,19 +28,24 @@
         </div>
 
         <!-- Slide -->
-        <div class="slide-col">
+        <div class="slide-col slide-col-bg">
           <template v-if="currentSlideUrl || pdfMode">
-
-            <!-- IMG mode -->
-            <transition name="slide-fade" mode="out-in">
-              <img
-                v-if="!pdfMode"
-                :key="currentSlideUrl"
-                :src="currentSlideUrl"
-                alt="slide"
-                class="slide-img"
-              />
-            </transition>
+            <!-- IMG mode: แสดงรูปเมื่อโหลดเสร็จแล้วเท่านั้น (ซ่อนด้วย overlay จน img fire @load) -->
+            <template v-if="!pdfMode">
+              <div class="slide-img-wrap" :class="{ 'slide-img-loaded': firstSlideImageLoaded }">
+                <img
+                  v-if="currentSlideUrl"
+                  :key="currentSlideUrl"
+                  :src="currentSlideUrl"
+                  alt="slide"
+                  class="slide-img"
+                  @load="firstSlideImageLoaded = true"
+                />
+                <div v-show="currentSlideUrl && !firstSlideImageLoaded" class="slide-img-overlay" aria-hidden="true">
+                  <span>กำลังโหลดสไลด์...</span>
+                </div>
+              </div>
+            </template>
 
             <!-- PDF/Canvas mode: ref ต้องไม่หาย จึงใช้ CSS class transition แทน -->
             <canvas
@@ -51,7 +56,11 @@
             ></canvas>
           </template>
 
-          <!-- Placeholder ตอนไม่มีสไลด์ -->
+          <!-- โหลดสไลด์อยู่ -->
+          <div v-else-if="!slidesReady" class="slide-placeholder slide-loading">
+            <span>กำลังโหลดสไลด์...</span>
+          </div>
+          <!-- โหลดเสร็จแล้วแต่ไม่มีสไลด์ -->
           <div v-else class="slide-placeholder">
             <span>ยังไม่มีสไลด์</span>
           </div>
@@ -134,6 +143,8 @@ const syncSubmitting = ref(false);
 const syncErrorMessage = ref('');
 const pdfMode = ref(false);
 const pdfCanvasRef = ref(null);
+const slidesReady = ref(false);
+const firstSlideImageLoaded = ref(false);
 const selectedIndex = ref(0);
 const isSlideTransitioning = ref(false);
 
@@ -265,6 +276,7 @@ const fetchSlides = async () => {
     } else {
       slides.value = arr;
       pdfMode.value = false;
+      firstSlideImageLoaded.value = false;
     }
     selectedIndex.value = 0;
   } catch {
@@ -281,20 +293,29 @@ const uploadSlides = async () => {
     const res = await axios.post(`${BACKEND_BASE}/api/videos/${videoId}/slides`, form, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
-    if (res.data?.slides?.length) {
-      const newSlides = res.data.slides;
+
+    const newSlides = Array.isArray(res.data?.slides) ? res.data.slides : [];
+    const pdfUrl = res.data?.pdfUrl || `${BACKEND_BASE}/api/videos/stream/${videoId}/slides/presentation.pdf`;
+    const hasImages = newSlides.length > 0 && newSlides.every(s => s.imageUrl);  // ✅ เช็คให้ครบ
+
+    if (hasImages) {
       slides.value = newSlides;
       pdfMode.value = false;
       selectedIndex.value = 0;
-      currentSlidePage = 0;          // reset ให้ applySlideDisplay ทำงาน
+      currentSlidePage = 0;
       await nextTick();
-      showSelectedSlide();           // ✅ เรียกตรงนี้แทนการ set URL ตรงๆ
+      showSelectedSlide();
     } else {
-      const pdfUrl = res.data?.pdfUrl || `${BACKEND_BASE}/api/videos/stream/${videoId}/slides/presentation.pdf`;
-      pdfMode.value = true;          // ✅ set ก่อน
-      await nextTick();              // ✅ รอ canvas render เข้า DOM
+      pdfMode.value = true;          
+      await nextTick();              
       await loadPdfAndPrepareSlides(ensureFullPdfUrl(pdfUrl));
+      // ถ้า backend ส่ง timestamp มาด้วย ก็ merge เข้าไป
+      newSlides.forEach(s => {
+        const idx = slides.value.findIndex(x => x.page === s.page);
+        if (idx !== -1 && typeof s.timestamp === 'number') slides.value[idx].timestamp = s.timestamp;
+      });
     }
+
     slideFileInput.value.value = '';
     syncErrorMessage.value = '';
   } catch {
@@ -309,6 +330,9 @@ const loadPdfAndPrepareSlides = async (pdfUrl) => {
   pdfDoc = await lib.getDocument(pdfUrl).promise;
   slides.value = Array.from({ length: pdfDoc.numPages }, (_, i) => ({ page: i + 1, imageUrl: '', timestamp: null }));
   selectedIndex.value = 0;
+  lastRenderedPage = 0;   
+  currentSlidePage = 0;   
+  await nextTick();        
   await renderPageToCanvas(1);
   await generateThumbnailsFromPdf();
 };
@@ -341,18 +365,21 @@ const generateThumbnailsFromPdf = async () => {
 
 // img → Vue transition ผ่าน :key
 // canvas → CSS class transition (ref ต้องไม่ถูก destroy)
-const applySlideDisplay = async (s) => {
+const applySlideDisplay = async (s, skipTransition = false) => {
   if (!s) return;
   if (s.page === currentSlidePage) return;
   currentSlidePage = s.page;
 
   if (pdfMode.value) {
-    isSlideTransitioning.value = true;
-    await new Promise(r => setTimeout(r, 250));
-    await nextTick();
+    if (!skipTransition) {
+      isSlideTransitioning.value = true;
+      await new Promise(r => setTimeout(r, 250));
+      await nextTick();
+    }
     await renderPageToCanvas(s.page);
     isSlideTransitioning.value = false;
   } else {
+    if (!skipTransition) firstSlideImageLoaded.value = false;
     currentSlideUrl.value = getImageUrl(s);
   }
 };
@@ -369,7 +396,7 @@ const nextSlide = () => {
   applySlideDisplay(slides.value[selectedIndex.value]);
 };
 
-const showSelectedSlide = () => { applySlideDisplay(slides.value[selectedIndex.value]); };
+const showSelectedSlide = () => { applySlideDisplay(slides.value[selectedIndex.value], true); };
 
 const toggleSync = () => {
   showSync.value = !showSync.value;
@@ -432,7 +459,8 @@ const updateCurrentSlide = () => {
     ? candidates.reduce((a, b) => a.timestamp > b.timestamp ? a : b)
     : slides.value[0];
 
-  applySlideDisplay(s);
+  const isInitial = currentSlidePage === 0;
+  applySlideDisplay(s, isInitial);
 };
 
 // ─── Lifecycle ───────────────────────────────────────────────
@@ -469,6 +497,7 @@ onMounted(async () => {
 
   await fetchSlides();
   updateCurrentSlide();
+  slidesReady.value = true;
 
   if (Hls.isSupported()) {
     const hls = new Hls();
@@ -569,6 +598,29 @@ onMounted(async () => {
   border-radius: 8px;
   background: #0f172a;
 }
+.slide-col-bg { background: #0f172a; }
+
+.slide-img-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.slide-img-overlay {
+  position: absolute;
+  inset: 0;
+  background: #0f172a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9ca3af;
+  font-size: 13px;
+  transition: opacity 0.2s ease;
+}
+.slide-img-wrap.slide-img-loaded .slide-img-overlay {
+  opacity: 0;
+  pointer-events: none;
+}
 
 .slide-img {
   width: 100%;
@@ -598,6 +650,9 @@ onMounted(async () => {
   justify-content: center;
   color: #6b7280;
   font-size: 13px;
+}
+.slide-placeholder.slide-loading {
+  color: #9ca3af;
 }
 
 /* ─── Slide transition (img mode) ────────────────────────── */
