@@ -96,10 +96,10 @@
             <div v-for="s in slides" :key="s.page" class="slide-row">
               <div class="slide-page-label">หน้า {{ s.page }}</div>
               <input
-                type="number"
-                min="0"
-                step="0.1"
-                v-model.number="s.timestamp"
+                type="text"
+                :value="formatTime(s.timestamp)"
+                @change="(e) => updateTimestamp(s, e.target.value)"
+                placeholder="เช่น 01:15"
                 class="timestamp-input"
               />
               <button @click="setTimestampFromVideo(s.page)" class="btn btn-blue">ใช้เวลาวิดีโอ</button>
@@ -516,6 +516,35 @@ onMounted(async () => {
     });
   }
 });
+
+// แปลงจากวินาที (75) ไปเป็นข้อความ (01:15) เพื่อโชว์ในช่อง Input
+const formatTime = (seconds) => {
+  if (seconds === null || seconds === undefined || isNaN(seconds)) return '';
+  const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+};
+
+// แปลงจากข้อความ (01:15) กลับเป็นวินาที (75) เพื่อเซฟลงระบบ
+const updateTimestamp = (slide, value) => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    slide.timestamp = null;
+    return;
+  }
+  
+  let parsedSeconds = 0;
+  if (trimmed.includes(':')) {
+    const parts = trimmed.split(':').map(Number);
+    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+      parsedSeconds = (parts[0] * 60) + parts[1];
+    }
+  } else {
+    parsedSeconds = Number(trimmed);
+  }
+  
+  slide.timestamp = isNaN(parsedSeconds) ? null : parsedSeconds;
+};
 </script>
 
 <style scoped>
