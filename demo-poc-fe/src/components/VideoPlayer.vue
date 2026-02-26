@@ -48,7 +48,7 @@
               </div>
             </template>
 
-            <!-- PDF/Canvas mode: ref ต้องไม่หาย จึงใช้ CSS class transition แทน -->
+            
             <canvas
               v-if="pdfMode"
               ref="pdfCanvasRef"

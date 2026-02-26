@@ -54,7 +54,18 @@
     "uploadedAt": "2026-02-26T03:58:13.986Z",
     "status": "ready",
     "description": "",
-    "slides": [],
+    "slides": [
+      {
+        "page": 2,
+        "imageUrl": "",
+        "timestamp": 10
+      },
+      {
+        "page": 3,
+        "imageUrl": "",
+        "timestamp": 15
+      }
+    ],
     "pdfUrl": "/api/videos/stream/bb9e8c8e-d20a-44f9-816c-571f43b31fdb/slides/presentation.pdf"
   }
 ]
