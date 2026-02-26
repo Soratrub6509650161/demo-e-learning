@@ -75,6 +75,9 @@
             <button @click="prevSlide" class="btn btn-gray">← ก่อนหน้า</button>
             <span class="slide-counter">หน้า {{ selectedIndex + 1 }} / {{ slides.length }}</span>
             <button @click="nextSlide" class="btn btn-gray">ถัดไป →</button>
+            <span class="slide-mode-badge" :class="pdfMode ? 'mode-pdf' : 'mode-image'">
+              {{ pdfMode ? 'โหมด PDF' : 'โหมดภาพ (PNG)' }}
+            </span>
           </div>
 
           <div v-if="slides.length" class="slide-time-label">ตั้งเวลาให้แต่ละหน้า</div>
@@ -96,6 +99,7 @@
           <div v-if="slides.length" class="sync-actions">
             <button @click="saveSync" :disabled="syncSubmitting" class="btn btn-blue">บันทึกการซิงก์</button>
             <button @click="fetchSlides" class="btn btn-gray">รีเฟรชสไลด์</button>
+            <button @click="deleteSlides" :disabled="syncSubmitting" class="btn btn-red">ลบสไลด์</button>
           </div>
 
           <p v-if="syncErrorMessage" class="error-msg">{{ syncErrorMessage }}</p>
@@ -199,14 +203,20 @@ const syncAndCalculate = async (isEnded) => {
 
 const handleEnded = () => { syncAndCalculate(true); };
 
-const handleBeforeUnload = () => {
-  const current = videoRef.value ? videoRef.value.currentTime : 0;
+/** บันทึกเวลาเมื่อออกจากหน้า (ปิดแท็บ/รีเฟรช หรือ กดย้อนกลับ) ใช้ fetch + keepalive เพื่อให้ส่งได้แม้กำลัง teardown */
+const saveResumeTimeOnLeave = (current, duration = 0) => {
+  const c = current ?? (videoRef.value ? videoRef.value.currentTime : 0);
+  const d = duration ?? (videoRef.value ? videoRef.value.duration : 0);
   fetch(`${BACKEND_BASE}/api/video/sync`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId, videoId, isEnded: false, currentTime: current }),
+    body: JSON.stringify({ userId, videoId, isEnded: false, currentTime: c, videoDuration: d }),
     keepalive: true
   });
+};
+
+const handleBeforeUnload = () => {
+  saveResumeTimeOnLeave();
 };
 
 const handleTimeUpdate = () => {
@@ -225,6 +235,13 @@ const getImageUrl = (s) => {
   return url;
 };
 
+/** ทำให้ PDF URL เป็น full URL ของ backend เสมอ (ป้องกัน PDF.js โหลดผิด origin แล้วได้ HTML) */
+const ensureFullPdfUrl = (pdfUrl) => {
+  if (!pdfUrl) return `${BACKEND_BASE}/api/videos/stream/${videoId}/slides/presentation.pdf`;
+  if (pdfUrl.startsWith('http://') || pdfUrl.startsWith('https://')) return pdfUrl;
+  return `${BACKEND_BASE}${pdfUrl.startsWith('/') ? '' : '/'}${pdfUrl}`;
+};
+
 const fetchSlides = async () => {
   try {
     const res = await axios.get(`${BACKEND_BASE}/api/videos/${videoId}/slides`);
@@ -234,11 +251,13 @@ const fetchSlides = async () => {
       : `${BACKEND_BASE}/api/videos/stream/${videoId}/slides/presentation.pdf`;
 
     if (!arr.length) {
-      await loadPdfAndPrepareSlides(pdfUrl);
-      pdfMode.value = true;
+      pdfMode.value = true;         
+      await nextTick();             
+      await loadPdfAndPrepareSlides(ensureFullPdfUrl(pdfUrl));
     } else if (arr.some(s => !s.imageUrl)) {
-      await loadPdfAndPrepareSlides(pdfUrl);
-      pdfMode.value = true;
+      pdfMode.value = true;          
+      await nextTick();             
+      await loadPdfAndPrepareSlides(ensureFullPdfUrl(pdfUrl));
       arr.forEach(s => {
         const idx = slides.value.findIndex(x => x.page === s.page);
         if (idx !== -1 && typeof s.timestamp === 'number') slides.value[idx].timestamp = s.timestamp;
@@ -263,12 +282,18 @@ const uploadSlides = async () => {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
     if (res.data?.slides?.length) {
-      slides.value = res.data.slides;
+      const newSlides = res.data.slides;
+      slides.value = newSlides;
       pdfMode.value = false;
+      selectedIndex.value = 0;
+      currentSlidePage = 0;          // reset ให้ applySlideDisplay ทำงาน
+      await nextTick();
+      showSelectedSlide();           // ✅ เรียกตรงนี้แทนการ set URL ตรงๆ
     } else {
       const pdfUrl = res.data?.pdfUrl || `${BACKEND_BASE}/api/videos/stream/${videoId}/slides/presentation.pdf`;
-      await loadPdfAndPrepareSlides(pdfUrl);
-      pdfMode.value = true;
+      pdfMode.value = true;          // ✅ set ก่อน
+      await nextTick();              // ✅ รอ canvas render เข้า DOM
+      await loadPdfAndPrepareSlides(ensureFullPdfUrl(pdfUrl));
     }
     slideFileInput.value.value = '';
     syncErrorMessage.value = '';
@@ -379,6 +404,24 @@ const saveSync = async () => {
   }
 };
 
+const deleteSlides = async () => {
+  if (!confirm('ต้องการลบสไลด์ทั้งหมดของวิดีโอนี้หรือไม่? หลังลบสามารถอัปโหลดไฟล์ใหม่ได้')) return;
+  syncSubmitting.value = true;
+  syncErrorMessage.value = '';
+  try {
+    await axios.delete(`${BACKEND_BASE}/api/videos/${videoId}/slides`);
+    slides.value = [];
+    pdfMode.value = false;
+    currentSlideUrl.value = '';
+    pdfDoc = null;
+    selectedIndex.value = 0;
+  } catch {
+    syncErrorMessage.value = 'ลบสไลด์ไม่สำเร็จ';
+  } finally {
+    syncSubmitting.value = false;
+  }
+};
+
 const updateCurrentSlide = () => {
   if (!slides.value.length || !videoRef.value) { currentSlideUrl.value = ''; return; }
   if (showSync.value) { showSelectedSlide(); return; }
@@ -395,16 +438,26 @@ const updateCurrentSlide = () => {
 // ─── Lifecycle ───────────────────────────────────────────────
 
 onBeforeUnmount(() => {
+  const current = videoRef.value ? videoRef.value.currentTime : 0;
+  const duration = videoRef.value ? videoRef.value.duration : 0;
+  saveResumeTimeOnLeave(current, duration);
   clearInterval(heartbeatInterval);
   clearTimeout(seekDebounceTimer);
-  syncAndCalculate(false);
   window.removeEventListener('beforeunload', handleBeforeUnload);
+  window.removeEventListener('popstate', handlePopState);
   window.removeEventListener('keydown', handleKeyDown);
 });
+
+const handlePopState = () => {
+  const current = videoRef.value ? videoRef.value.currentTime : 0;
+  const duration = videoRef.value ? videoRef.value.duration : 0;
+  saveResumeTimeOnLeave(current, duration);
+};
 
 onMounted(async () => {
   const video = videoRef.value;
   window.addEventListener('beforeunload', handleBeforeUnload);
+  window.addEventListener('popstate', handlePopState);
   window.addEventListener('keydown', handleKeyDown);
 
   let savedTime = 0;
@@ -600,6 +653,9 @@ onMounted(async () => {
 }
 
 .slide-counter { font-size: 12px; color: #ddd; }
+.slide-mode-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; margin-left: 8px; }
+.slide-mode-badge.mode-image { background: #065f46; color: #6ee7b7; }
+.slide-mode-badge.mode-pdf   { background: #1e3a5f; color: #93c5fd; }
 .slide-time-label { font-size: 12px; color: #aaa; margin-bottom: 8px; }
 
 .slide-list {
@@ -638,6 +694,7 @@ onMounted(async () => {
 .btn-blue  { background: #3b82f6; color: #fff; }
 .btn-green { background: #10b981; color: #fff; }
 .btn-gray  { background: #6b7280; color: #fff; }
+.btn-red   { background: #ef4444; color: #fff; }
 
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
 

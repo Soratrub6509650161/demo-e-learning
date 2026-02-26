@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { spawn } from "child_process";
-import { fromPath } from "pdf2pic";
+import CloudConvert from "cloudconvert";
 
 type VideoStatus = "processing" | "ready" | "error";
 
@@ -203,34 +203,108 @@ class VideoController {
     }
     const pdfPath = path.join(slidesDir, "presentation.pdf");
     fs.renameSync(file.path, pdfPath);
-    try {
-      const options = {
-        density: 150,
-        saveFilename: "page",
-        savePath: slidesDir,
-        format: "png",
-        width: 1280,
-        height: 720,
-      };
-      const convert = fromPath(pdfPath, options);
-      const results = await convert.bulk(-1, { responseType: "image" });
-      const slidesData: SlideRecord[] = results.map((result: any) => ({
-        page: result.page,
-        imageUrl: `/api/videos/stream/${id}/slides/${result.name}`,
-        timestamp: null,
-      }));
-      videos[videoIndex].slides = slidesData;
-      writeVideos(videos);
-      res.json({ message: "Slides uploaded and converted successfully", slides: slidesData });
-    } catch (error) {
-      const fallbackPdfUrl = `/api/videos/stream/${id}/slides/presentation.pdf`;
+
+    const fallbackPdfUrl = `/api/videos/stream/${id}/slides/presentation.pdf`;
+    const setPdfFallback = () => {
       videos[videoIndex].pdfUrl = fallbackPdfUrl;
+      videos[videoIndex].slides = [];
       writeVideos(videos);
       res.json({
         message: "PDF stored without image conversion. Using client-side rendering.",
         pdfUrl: fallbackPdfUrl,
-        slides: []
+        slides: [],
       });
+    };
+
+    const apiKey = process.env.CLOUDCONVERT_API_KEY;
+    if (!apiKey || apiKey === "your_cloudconvert_api_key_here") {
+      console.warn("CLOUDCONVERT_API_KEY not set; storing PDF only.");
+      setPdfFallback();
+      return;
+    }
+
+    try {
+      const cloudConvert = new CloudConvert(apiKey);
+      const job = await cloudConvert.jobs.create({
+        tasks: {
+          "upload-pdf": {
+            operation: "import/upload",
+          },
+          "convert-to-png": {
+            operation: "convert",
+            input: "upload-pdf",
+            output_format: "png",
+          },
+          "export-png": {
+            operation: "export/url",
+            input: "convert-to-png",
+          },
+        },
+      });
+
+      const uploadTask = job.tasks?.find((t: { name: string }) => t.name === "upload-pdf");
+      if (!uploadTask) {
+        throw new Error("Upload task not found");
+      }
+      const readStream = fs.createReadStream(pdfPath);
+      await cloudConvert.tasks.upload(uploadTask, readStream, "presentation.pdf");
+
+      const completedJob = await cloudConvert.jobs.wait(job.id);
+      if (completedJob.status === "error") {
+        const errMsg = (completedJob as any).message || "CloudConvert job failed";
+        throw new Error(errMsg);
+      }
+
+      const exportUrls = cloudConvert.jobs.getExportUrls(completedJob);
+      if (!exportUrls || exportUrls.length === 0) {
+        throw new Error("No export URLs from CloudConvert");
+      }
+
+      for (let i = 0; i < exportUrls.length; i++) {
+        const pageNum = i + 1;
+        const fileUrl = exportUrls[i].url;
+        if (!fileUrl) {
+          throw new Error(`No URL for slide image ${pageNum}`);
+        }
+        const outPath = path.join(slidesDir, `page-${pageNum}.png`);
+        const resp = await fetch(fileUrl);
+        if (!resp.ok) {
+          throw new Error(`Failed to download slide image ${pageNum}`);
+        }
+        const buffer = Buffer.from(await resp.arrayBuffer());
+        fs.writeFileSync(outPath, buffer);
+      }
+
+      const slidesData: SlideRecord[] = exportUrls.map((_, i) => ({
+        page: i + 1,
+        imageUrl: `/api/videos/stream/${id}/slides/page-${i + 1}.png`,
+        timestamp: null,
+      }));
+
+      videos[videoIndex].slides = slidesData;
+      videos[videoIndex].pdfUrl = undefined;
+      writeVideos(videos);
+      res.json({
+        message: "Slides uploaded and converted successfully (CloudConvert)",
+        slides: slidesData,
+      });
+    } catch (error: any) {
+      const cause = error?.cause;
+      let detail = "";
+      if (cause && typeof cause.text === "function") {
+        try {
+          const text = await cause.text();
+          detail = text ? ` Response: ${text}` : "";
+        } catch {
+          detail = " (could not read response body)";
+        }
+      }
+      console.error(
+        "CloudConvert slide conversion error:",
+        error?.message || error,
+        detail || (cause ? ` Status: ${cause.status} ${cause.statusText}` : "")
+      );
+      setPdfFallback();
     }
   };
 
@@ -307,6 +381,35 @@ class VideoController {
     }
 
     res.json({ message: "Video deleted" });
+  };
+
+  /**
+   * DELETE /api/videos/:id/slides
+   * ลบสไลด์ทั้งหมดของวิดีโอ (ไฟล์ PDF/PNG ในโฟลเดอร์ slides + เคลียร์ใน videos.json)
+   */
+  deleteSlides = (req: Request, res: Response): void => {
+    const { id } = req.params;
+    const videos = readVideos();
+    const idx = videos.findIndex((v) => v.id === id);
+    if (idx === -1) {
+      res.status(404).json({ message: "Video not found" });
+      return;
+    }
+    const slidesDir = path.join(uploadsDir, id, "slides");
+    if (fs.existsSync(slidesDir)) {
+      try {
+        const files = fs.readdirSync(slidesDir);
+        for (const file of files) {
+          fs.unlinkSync(path.join(slidesDir, file));
+        }
+      } catch (e) {
+        console.error("Failed to delete slide files", e);
+      }
+    }
+    videos[idx].slides = [];
+    videos[idx].pdfUrl = undefined;
+    writeVideos(videos);
+    res.json({ message: "Slides deleted" });
   };
 
   getSlides = (req: Request, res: Response): void => {

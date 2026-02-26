@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import progressController from "./controllers/progressController";
@@ -28,6 +29,7 @@ app.post(
 app.post("/api/videos/:id/slides", uploadMiddleware, videoController.uploadSlides);
 app.get("/api/videos/stream/:id/slides/:imageName", videoController.serveSlideImage);
 app.get("/api/videos/:id/slides", videoController.getSlides);
+app.delete("/api/videos/:id/slides", videoController.deleteSlides);
 app.post("/api/videos/:id/slides/sync", videoController.syncSlides);
 app.get(
   "/api/videos/stream/:id/playlist.m3u8",
