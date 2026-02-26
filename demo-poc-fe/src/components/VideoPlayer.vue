@@ -2,8 +2,9 @@
   <div class="player-wrapper">
     <div class="player-inner">
 
-      <!-- Top bar: title + sync button -->
+      <!-- Top bar: ปุ่มกลับ + title + sync button -->
       <div class="top-bar">
+        <router-link to="/" class="top-bar-back">← กลับ</router-link>
         <p v-if="title" class="player-title">{{ title }}</p>
         <button @click="toggleSync" class="btn btn-blue">
           {{ showSync ? 'ปิด Sync Slides' : 'Sync Slides กับ Video' }}
@@ -549,6 +550,14 @@ onMounted(async () => {
   text-align: center;
 }
 
+.top-bar-back {
+  position: absolute;
+  left: 0;
+  color: #93c5fd;
+  font-size: 14px;
+  text-decoration: none;
+}
+.top-bar-back:hover { color: #bfdbfe; }
 /* ปุ่ม sync ลอยชิดขวา โดยไม่ดัน title ออกจากกลาง */
 .top-bar .btn {
   position: absolute;
